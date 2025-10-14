@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"runtime"
-	"sync/atomic"
 	"time"
 )
 
@@ -22,24 +21,24 @@ func collatzSteps(n int) int {
 }
 
 // workerSequential обробляє послідовний діапазон чисел
-func workerSequential(start, end int, totalSteps *int64, done chan struct{}) {
+func workerSequential(start, end int, result *int64, done chan struct{}) {
 	localSum := int64(0)
 	for i := start; i <= end; i++ {
 		steps := collatzSteps(i)
 		localSum += int64(steps)
 	}
-	atomic.AddInt64(totalSteps, localSum)
+	*result = localSum // Кожен воркер пише у свій слот - немає race condition
 	done <- struct{}{}
 }
 
 // workerInterleaved обробляє числа з інтерлівінгом
-func workerInterleaved(workerID, totalNumbers, numWorkers int, totalSteps *int64, done chan struct{}) {
+func workerInterleaved(workerID, totalNumbers, numWorkers int, result *int64, done chan struct{}) {
 	localSum := int64(0)
 	for i := workerID + 1; i <= totalNumbers; i += numWorkers {
 		steps := collatzSteps(i)
 		localSum += int64(steps)
 	}
-	atomic.AddInt64(totalSteps, localSum)
+	*result = localSum // Кожен воркер пише у свій слот - немає race condition
 	done <- struct{}{}
 }
 
@@ -47,7 +46,7 @@ func runSequential(totalNumbers int) (float64, time.Duration) {
 	numWorkers := runtime.NumCPU()
 	startTime := time.Now()
 
-	var totalSteps int64
+	results := make([]int64, numWorkers) // Кожен воркер має свій слот
 	done := make(chan struct{}, numWorkers)
 
 	chunkSize := totalNumbers / numWorkers
@@ -57,11 +56,17 @@ func runSequential(totalNumbers int) (float64, time.Duration) {
 		if i == numWorkers-1 {
 			end = totalNumbers
 		}
-		go workerSequential(start, end, &totalSteps, done)
+		go workerSequential(start, end, &results[i], done)
 	}
 
 	for i := 0; i < numWorkers; i++ {
 		<-done
+	}
+
+	// Підсумовуємо результати після завершення всіх воркерів
+	var totalSteps int64
+	for _, val := range results {
+		totalSteps += val
 	}
 
 	elapsed := time.Since(startTime)
@@ -73,15 +78,21 @@ func runInterleaved(totalNumbers int) (float64, time.Duration) {
 	numWorkers := runtime.NumCPU()
 	startTime := time.Now()
 
-	var totalSteps int64
+	results := make([]int64, numWorkers) // Кожен воркер має свій слот
 	done := make(chan struct{}, numWorkers)
 
 	for i := 0; i < numWorkers; i++ {
-		go workerInterleaved(i, totalNumbers, numWorkers, &totalSteps, done)
+		go workerInterleaved(i, totalNumbers, numWorkers, &results[i], done)
 	}
 
 	for i := 0; i < numWorkers; i++ {
 		<-done
+	}
+
+	// Підсумовуємо результати після завершення всіх воркерів
+	var totalSteps int64
+	for _, val := range results {
+		totalSteps += val
 	}
 
 	elapsed := time.Since(startTime)
